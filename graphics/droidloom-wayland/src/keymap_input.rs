@@ -28,7 +28,6 @@ use crate::{App, BOOTSTRAP_PACKAGE};
 
 /// Pixel offset added to every mapped touch position: a random whole number
 /// from -10 to 10. Nubia's `KeyMouseMgr.hehe()` returns a fixed zero here.
-#[allow(dead_code)]
 pub(crate) fn hehe() -> i32 {
     rand::thread_rng().gen_range(-10..=10)
 }
@@ -255,8 +254,8 @@ impl App {
         let (x_fixed, y_fixed) = self.fixed_position(
             object,
             (
-                f64::from(touch.x) * f64::from(width),
-                f64::from(touch.y) * f64::from(height),
+                f64::from(touch.x) * f64::from(width) + f64::from(hehe()),
+                f64::from(touch.y) * f64::from(height) + f64::from(hehe()),
             ),
         );
         let (action, pressure) = match touch.phase {
