@@ -13,6 +13,7 @@ mod imports;
 mod input;
 mod input_time;
 mod insets;
+mod keymap_input;
 mod layers;
 mod notifications;
 mod presentation_audit;
@@ -396,6 +397,8 @@ struct App {
     focused: Option<TaskObjectId>,
     pointer_contact: Option<Contact>,
     touch_contacts: BTreeMap<i32, Contact>,
+    /// Key and mouse button mapper for the focused game, if it has a profile.
+    keymap: Option<droidloom_keymap::Mapper>,
     // Touch and mouse share Android's injected pointer device; keys are separate.
     motion_times: input_time::Stream,
     key_times: input_time::Stream,
@@ -1992,11 +1995,13 @@ impl App {
             self.remove_task(object);
         }
         self.focused = None;
+        self.keymap_reset();
         self.pointer_contact = None;
         self.touch_contacts.clear();
     }
 
     fn clear_contacts(&mut self) {
+        self.keymap_reset();
         clear_contact_state(
             &mut self.pointer_contact,
             &mut self.touch_contacts,
@@ -2239,6 +2244,9 @@ impl App {
         if self.focused == object {
             return Ok(());
         }
+        if let Some(previous) = self.focused {
+            self.keymap_release(previous);
+        }
         if let Some(previous) = self.focused
             && let Some(task) = self.tasks.get_mut(&previous)
         {
@@ -2248,6 +2256,7 @@ impl App {
             }
         }
         self.focused = object;
+        self.keymap_focus(object);
         self.update_text_input();
         if let Some(object) = object
             && let Some(task) = self.tasks.get_mut(&object)
@@ -3007,6 +3016,9 @@ impl KeyboardHandler for App {
         {
             self.activation.input(serial, data.seat(), surface);
         }
+        if self.keymap_input(event.raw_code, droidloom_keymap::InputState::Pressed) {
+            return;
+        }
         if let Some(object) = self.focused
             && let Err(error) = self
                 .input_time(input_time::Device::Keyboard, event.time)
@@ -3035,6 +3047,9 @@ impl KeyboardHandler for App {
         event: KeyEvent,
     ) {
         self.clipboard.serial(serial);
+        if self.keymap_input(event.raw_code, droidloom_keymap::InputState::Repeat) {
+            return;
+        }
         if let Some(object) = self.focused
             && let Err(error) = self
                 .input_time(input_time::Device::Keyboard, event.time)
@@ -3063,6 +3078,9 @@ impl KeyboardHandler for App {
         event: KeyEvent,
     ) {
         self.clipboard.serial(serial);
+        if self.keymap_input(event.raw_code, droidloom_keymap::InputState::Released) {
+            return;
+        }
         if let Some(object) = self.focused
             && let Err(error) = self
                 .input_time(input_time::Device::Keyboard, event.time)
@@ -3129,6 +3147,12 @@ impl PointerHandler for App {
             }
             let object = self.task_for_surface(&event.surface);
             match event.kind {
+                PointerEventKind::Press { button, .. } if button != LEFT_BUTTON => {
+                    self.keymap_input(button, droidloom_keymap::InputState::Pressed);
+                }
+                PointerEventKind::Release { button, .. } if button != LEFT_BUTTON => {
+                    self.keymap_input(button, droidloom_keymap::InputState::Released);
+                }
                 PointerEventKind::Press { button, time, .. } if button == LEFT_BUTTON => {
                     if self.pointer_contact.is_some() {
                         self.retire_contacts(None);
@@ -3514,6 +3538,7 @@ fn run() -> Result<(), PresenterError> {
         focused: None,
         pointer_contact: None,
         touch_contacts: BTreeMap::new(),
+        keymap: None,
         motion_times: input_time::Stream::default(),
         key_times: input_time::Stream::default(),
         input_timestamps: input_time::Timestamps::new(globals.bind(&qh, 1..=1, ()).ok()),
