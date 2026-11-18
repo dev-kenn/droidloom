@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::profile::{Look, Profile, Wheel};
+use crate::profile::{Aim, Look, Profile, Wheel};
 
 /// First pointer identity used for mapped contacts. Real touch and mouse
 /// contacts use small identities and `u32::MAX`, so these never collide.
@@ -35,6 +35,17 @@ struct LookState {
     active: bool,
     /// Slot the look touch occupies while it is down.
     slot: Option<u32>,
+    /// Where the touch currently is.
+    at: (f32, f32),
+}
+
+/// The touch of an aim key that is held down.
+#[derive(Debug)]
+struct AimState {
+    /// Index of the aim in the profile.
+    index: usize,
+    /// Slot the aim touch occupies.
+    slot: u32,
     /// Where the touch currently is.
     at: (f32, f32),
 }
@@ -90,10 +101,12 @@ pub struct Outcome {
 pub struct Mapper {
     profile: Profile,
     enabled: bool,
-    /// Held key code to the slot (0 to `MAX_CONTACTS` - 1) it occupies.
-    held: BTreeMap<u16, u32>,
+    /// Held tap key code to the slots (0 to `MAX_CONTACTS` - 1) it occupies,
+    /// one per point.
+    held: BTreeMap<u16, Vec<u32>>,
     wheel: WheelState,
     look: LookState,
+    aim: Option<AimState>,
 }
 
 impl Mapper {
@@ -106,6 +119,7 @@ impl Mapper {
             held: BTreeMap::new(),
             wheel: WheelState::default(),
             look: LookState::default(),
+            aim: None,
         }
     }
 
@@ -124,7 +138,10 @@ impl Mapper {
     /// True when no mapped contact is held.
     #[must_use]
     pub fn is_idle(&self) -> bool {
-        self.held.is_empty() && self.wheel.slot.is_none() && self.look.slot.is_none()
+        self.held.is_empty()
+            && self.wheel.slot.is_none()
+            && self.look.slot.is_none()
+            && self.aim.is_none()
     }
 
     /// Turn mapping on or off. Turning it off ends every held contact.
@@ -145,14 +162,23 @@ impl Mapper {
         let held = std::mem::take(&mut self.held);
         let mut ended: Vec<TouchOut> = held
             .into_iter()
-            .filter_map(|(key, slot)| {
-                let tap = self.profile.taps.iter().find(|tap| tap.key == key)?;
-                Some(TouchOut {
-                    phase,
-                    pointer_id: SYNTHETIC_POINTER_BASE + slot,
-                    x: tap.x,
-                    y: tap.y,
-                })
+            .flat_map(|(key, slots)| {
+                let points = self
+                    .profile
+                    .taps
+                    .iter()
+                    .find(|tap| tap.key == key)
+                    .map(|tap| tap.points.clone())
+                    .unwrap_or_default();
+                slots
+                    .into_iter()
+                    .zip(points)
+                    .map(move |(slot, point)| TouchOut {
+                        phase,
+                        pointer_id: SYNTHETIC_POINTER_BASE + slot,
+                        x: point.0,
+                        y: point.1,
+                    })
             })
             .collect();
         if let Some(slot) = self.wheel.slot.take() {
@@ -172,14 +198,22 @@ impl Mapper {
                 y: self.look.at.1,
             });
         }
+        if let Some(aim) = self.aim.take() {
+            ended.push(TouchOut {
+                phase,
+                pointer_id: SYNTHETIC_POINTER_BASE + aim.slot,
+                x: aim.at.0,
+                y: aim.at.1,
+            });
+        }
         ended
     }
 
-    /// True when the profile has mouse-look and mapping is on, so the host
-    /// should lock the pointer and send relative motion.
+    /// True when the profile has mouse-look or aim keys and mapping is on, so
+    /// the host should lock the pointer and send relative motion.
     #[must_use]
     pub fn look_wanted(&self) -> bool {
-        self.enabled && self.profile.look.is_some()
+        self.enabled && (self.profile.look.is_some() || !self.profile.aims.is_empty())
     }
 
     /// True while the pointer is locked and mouse-look steers the touch.
@@ -195,17 +229,28 @@ impl Mapper {
         if !active && let Some(slot) = self.look.slot.take() {
             touches.push(self.look_touch(Phase::Up, slot));
         }
+        if !active && let Some(aim) = self.aim.take() {
+            touches.push(TouchOut {
+                phase: Phase::Up,
+                pointer_id: SYNTHETIC_POINTER_BASE + aim.slot,
+                x: aim.at.0,
+                y: aim.at.1,
+            });
+        }
         touches
     }
 
     /// Relative mouse movement as fractions of the window width and height.
     pub fn look_motion(&mut self, dx: f32, dy: f32) -> Vec<TouchOut> {
-        let Some(look) = self.profile.look else {
-            return Vec::new();
-        };
         if !self.enabled || !self.look.active || !dx.is_finite() || !dy.is_finite() {
             return Vec::new();
         }
+        if self.aim.is_some() {
+            return self.aim_motion(dx, dy);
+        }
+        let Some(look) = self.profile.look else {
+            return Vec::new();
+        };
         let mut touches = Vec::new();
         if self.look.slot.is_none() {
             let Some(slot) = self.free_slot() else {
@@ -292,12 +337,19 @@ impl Mapper {
         {
             return self.wheel_input(&wheel, direction, state);
         }
+        if let Some(index) =
+            self.profile.aims.iter().position(|aim| {
+                aim.key == code || aim.cancel.is_some_and(|(cancel, _)| cancel == code)
+            })
+        {
+            return self.aim_input(index, code, state);
+        }
         let Some(tap) = self
             .profile
             .taps
             .iter()
             .find(|tap| tap.key == code)
-            .copied()
+            .cloned()
         else {
             return Outcome::default();
         };
@@ -305,25 +357,29 @@ impl Mapper {
         match state {
             InputState::Pressed => {
                 if !self.held.contains_key(&code)
-                    && let Some(slot) = self.free_slot()
+                    && let Some(slots) = self.free_slots(tap.points.len())
                 {
-                    self.held.insert(code, slot);
-                    touches.push(TouchOut {
-                        phase: Phase::Down,
-                        pointer_id: SYNTHETIC_POINTER_BASE + slot,
-                        x: tap.x,
-                        y: tap.y,
-                    });
+                    for (slot, point) in slots.iter().zip(&tap.points) {
+                        touches.push(TouchOut {
+                            phase: Phase::Down,
+                            pointer_id: SYNTHETIC_POINTER_BASE + slot,
+                            x: point.0,
+                            y: point.1,
+                        });
+                    }
+                    self.held.insert(code, slots);
                 }
             }
             InputState::Released => {
-                if let Some(slot) = self.held.remove(&code) {
-                    touches.push(TouchOut {
-                        phase: Phase::Up,
-                        pointer_id: SYNTHETIC_POINTER_BASE + slot,
-                        x: tap.x,
-                        y: tap.y,
-                    });
+                if let Some(slots) = self.held.remove(&code) {
+                    for (slot, point) in slots.iter().zip(&tap.points) {
+                        touches.push(TouchOut {
+                            phase: Phase::Up,
+                            pointer_id: SYNTHETIC_POINTER_BASE + slot,
+                            x: point.0,
+                            y: point.1,
+                        });
+                    }
                 }
             }
             InputState::Repeat => {}
@@ -334,12 +390,117 @@ impl Mapper {
         }
     }
 
+    fn slot_in_use(&self, slot: u32) -> bool {
+        self.held.values().any(|slots| slots.contains(&slot))
+            || self.wheel.slot == Some(slot)
+            || self.look.slot == Some(slot)
+            || self.aim.as_ref().is_some_and(|aim| aim.slot == slot)
+    }
+
     fn free_slot(&self) -> Option<u32> {
-        (0..SLOTS).find(|slot| {
-            !self.held.values().any(|held| held == slot)
-                && self.wheel.slot != Some(*slot)
-                && self.look.slot != Some(*slot)
+        (0..SLOTS).find(|slot| !self.slot_in_use(*slot))
+    }
+
+    /// `count` free slots, or None when there are not that many.
+    fn free_slots(&self, count: usize) -> Option<Vec<u32>> {
+        let slots: Vec<u32> = (0..SLOTS)
+            .filter(|slot| !self.slot_in_use(*slot))
+            .take(count)
+            .collect();
+        (slots.len() == count).then_some(slots)
+    }
+
+    fn aim_input(&mut self, index: usize, code: u16, state: InputState) -> Outcome {
+        let aim = self.profile.aims[index].clone();
+        let mut touches = Vec::new();
+        let is_cancel = aim.cancel.is_some_and(|(cancel, _)| cancel == code);
+        match state {
+            InputState::Pressed if is_cancel => self.aim_cancel(index, &aim, &mut touches),
+            InputState::Pressed => self.aim_start(index, &aim, &mut touches),
+            InputState::Released if !is_cancel => {
+                if self.aim.as_ref().is_some_and(|state| state.index == index) {
+                    self.aim_lift(&mut touches);
+                }
+            }
+            InputState::Released | InputState::Repeat => {}
+        }
+        Outcome {
+            consumed: true,
+            touches,
+        }
+    }
+
+    fn aim_touch(&self, phase: Phase) -> Option<TouchOut> {
+        self.aim.as_ref().map(|aim| TouchOut {
+            phase,
+            pointer_id: SYNTHETIC_POINTER_BASE + aim.slot,
+            x: aim.at.0,
+            y: aim.at.1,
         })
+    }
+
+    fn aim_lift(&mut self, touches: &mut Vec<TouchOut>) {
+        touches.extend(self.aim_touch(Phase::Up));
+        self.aim = None;
+    }
+
+    fn aim_start(&mut self, index: usize, aim: &Aim, touches: &mut Vec<TouchOut>) {
+        if self.aim.as_ref().is_some_and(|state| state.index == index) {
+            return;
+        }
+        // Starting another aim abandons the one in progress.
+        if self.aim.is_some() {
+            self.aim_lift(touches);
+        }
+        if aim.stop_wheel
+            && let Some(slot) = self.wheel.slot.take()
+        {
+            touches.push(self.wheel_touch_at_slot(Phase::Up, slot));
+        }
+        let Some(slot) = self.free_slot() else {
+            return;
+        };
+        self.aim = Some(AimState {
+            index,
+            slot,
+            at: aim.anchor,
+        });
+        touches.extend(self.aim_touch(Phase::Down));
+    }
+
+    fn aim_cancel(&mut self, index: usize, aim: &Aim, touches: &mut Vec<TouchOut>) {
+        let Some((_, point)) = aim.cancel else {
+            return;
+        };
+        if self.aim.as_ref().is_some_and(|state| state.index == index) {
+            if let Some(state) = self.aim.as_mut() {
+                state.at = point;
+            }
+            touches.extend(self.aim_touch(Phase::Move));
+            self.aim_lift(touches);
+        }
+    }
+
+    fn aim_motion(&mut self, dx: f32, dy: f32) -> Vec<TouchOut> {
+        let Some(state) = self.aim.as_ref() else {
+            return Vec::new();
+        };
+        let aim = &self.profile.aims[state.index];
+        let next = (
+            (state.at.0 + dx * aim.sensitivity)
+                .clamp(aim.anchor.0 - aim.region.0, aim.anchor.0 + aim.region.0)
+                .clamp(0.0, 1.0),
+            (state.at.1 + dy * aim.sensitivity)
+                .clamp(aim.anchor.1 - aim.region.1, aim.anchor.1 + aim.region.1)
+                .clamp(0.0, 1.0),
+        );
+        if next == state.at {
+            return Vec::new();
+        }
+        if let Some(state) = self.aim.as_mut() {
+            state.at = next;
+        }
+        self.aim_touch(Phase::Move).into_iter().collect()
     }
 
     /// Where the joystick touch should be for the directions now held.
@@ -753,5 +914,124 @@ mod tests {
         let down = mapper.input(0x110, InputState::Pressed);
         assert!(down.consumed);
         assert_eq!((down.touches[0].x, down.touches[0].y), (0.9, 0.8));
+    }
+
+    fn aim_mapper() -> Mapper {
+        Mapper::new(
+            Profile::parse(
+                r#"
+                package = "com.example.game"
+                [wheel]
+                center = [0.2, 0.7]
+                radius = [0.1, 0.2]
+                up = "W"
+                down = "S"
+                left = "A"
+                right = "D"
+                [[aim]]
+                key = "Q"
+                anchor = [0.9, 0.7]
+                region = [0.1, 0.15]
+                cancel_key = "Space"
+                cancel_at = [0.8, 0.2]
+                stop_wheel = true
+                [[aim]]
+                key = "LeftAlt"
+                anchor = [0.5, 0.5]
+                region = [0.2, 0.2]
+                [[tap]]
+                key = "T"
+                points = [[0.1, 0.2], [0.3, 0.4]]
+                "#,
+            )
+            .unwrap(),
+        )
+    }
+
+    const Q: u16 = 16;
+    const ALT: u16 = 56;
+    const SPACE: u16 = 57;
+    const T: u16 = 20;
+
+    #[test]
+    fn one_key_can_touch_several_points_at_once() {
+        let mut mapper = aim_mapper();
+        let down = mapper.input(T, InputState::Pressed).touches;
+        assert_eq!(down.len(), 2);
+        assert!(down.iter().all(|touch| touch.phase == Phase::Down));
+        assert_ne!(down[0].pointer_id, down[1].pointer_id);
+        assert_eq!((down[0].x, down[0].y), (0.1, 0.2));
+        assert_eq!((down[1].x, down[1].y), (0.3, 0.4));
+        let up = mapper.input(T, InputState::Released).touches;
+        assert_eq!(up.len(), 2);
+        assert!(up.iter().all(|touch| touch.phase == Phase::Up));
+        assert!(mapper.is_idle());
+    }
+
+    #[test]
+    fn holding_an_aim_key_drags_a_touch_with_the_mouse_and_lifts_on_release() {
+        let mut mapper = aim_mapper();
+        mapper.set_look_active(true);
+        assert!(mapper.look_wanted());
+        let down = mapper.input(Q, InputState::Pressed).touches;
+        assert_eq!(down.len(), 1);
+        assert_eq!(down[0].phase, Phase::Down);
+        assert_eq!((down[0].x, down[0].y), (0.9, 0.7));
+        let moved = mapper.look_motion(-0.05, 0.05);
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].phase, Phase::Move);
+        assert!(near(moved[0].x, 0.85));
+        assert!(near(moved[0].y, 0.75));
+        let clamped = mapper.look_motion(-5.0, 0.0);
+        assert!(near(clamped[0].x, 0.8));
+        let up = mapper.input(Q, InputState::Released).touches;
+        assert_eq!(up.len(), 1);
+        assert_eq!(up[0].phase, Phase::Up);
+        assert!(near(up[0].x, 0.8));
+        assert!(mapper.is_idle());
+    }
+
+    #[test]
+    fn cancel_key_moves_the_touch_to_the_cancel_point_then_lifts() {
+        let mut mapper = aim_mapper();
+        mapper.set_look_active(true);
+        mapper.input(Q, InputState::Pressed);
+        let cancelled = mapper.input(SPACE, InputState::Pressed).touches;
+        let phases: Vec<_> = cancelled.iter().map(|touch| touch.phase).collect();
+        assert_eq!(phases, vec![Phase::Move, Phase::Up]);
+        assert_eq!((cancelled[0].x, cancelled[0].y), (0.8, 0.2));
+        assert!(mapper.is_idle());
+        assert!(mapper.input(Q, InputState::Released).touches.is_empty());
+        assert!(mapper.input(SPACE, InputState::Pressed).touches.is_empty());
+    }
+
+    #[test]
+    fn a_second_aim_replaces_the_first_and_stop_wheel_lifts_the_joystick() {
+        let mut mapper = aim_mapper();
+        mapper.set_look_active(true);
+        mapper.input(W, InputState::Pressed);
+        let first = mapper.input(Q, InputState::Pressed).touches;
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].phase, Phase::Up);
+        assert_eq!(first[1].phase, Phase::Down);
+        let second = mapper.input(ALT, InputState::Pressed).touches;
+        let phases: Vec<_> = second.iter().map(|touch| touch.phase).collect();
+        assert_eq!(phases, vec![Phase::Up, Phase::Down]);
+        assert_eq!((second[1].x, second[1].y), (0.5, 0.5));
+    }
+
+    #[test]
+    fn unlocking_or_toggling_lifts_an_aim() {
+        let mut mapper = aim_mapper();
+        mapper.set_look_active(true);
+        mapper.input(Q, InputState::Pressed);
+        let lifted = mapper.set_look_active(false);
+        assert_eq!(lifted.len(), 1);
+        assert_eq!(lifted[0].phase, Phase::Up);
+        assert!(mapper.is_idle());
+        mapper.set_look_active(true);
+        mapper.input(ALT, InputState::Pressed);
+        assert!(!mapper.set_enabled(false).is_empty());
+        assert!(mapper.is_idle());
     }
 }

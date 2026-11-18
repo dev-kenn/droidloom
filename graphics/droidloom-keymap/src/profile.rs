@@ -7,6 +7,9 @@ use thiserror::Error;
 
 use crate::keys::parse_key;
 
+/// Most points one key may touch at once.
+pub const MAX_TAP_POINTS: usize = 4;
+
 /// A profile could not be read or failed validation.
 #[derive(Debug, Error, PartialEq)]
 pub enum ProfileError {
@@ -25,6 +28,11 @@ pub enum ProfileError {
         /// The key the tap belongs to, as written in the file.
         key: String,
     },
+    /// A tap has no usable point, or an aim has bad numbers.
+    #[error(
+        "tap needs x and y, or a list of points; aim anchor, region and cancel point must be inside the window"
+    )]
+    BadPoint,
     /// The look anchor, region or sensitivity is not usable.
     #[error(
         "look anchor must be inside the window, region between 0.0 and 1.0, sensitivity above 0"
@@ -45,6 +53,8 @@ struct RawProfile {
     toggle_key: Option<String>,
     wheel: Option<RawWheel>,
     look: Option<RawLook>,
+    #[serde(default)]
+    aim: Vec<RawAim>,
     #[serde(default)]
     tap: Vec<RawTap>,
 }
@@ -72,19 +82,54 @@ struct RawWheel {
 #[serde(deny_unknown_fields)]
 struct RawTap {
     key: String,
-    x: f32,
-    y: f32,
+    x: Option<f32>,
+    y: Option<f32>,
+    points: Option<Vec<[f32; 2]>>,
 }
 
-/// One key mapped to a fixed point in the window.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAim {
+    key: String,
+    anchor: [f32; 2],
+    region: [f32; 2],
+    sensitivity: Option<f32>,
+    cancel_key: Option<String>,
+    cancel_at: Option<[f32; 2]>,
+    stop_wheel: Option<bool>,
+}
+
+/// One key mapped to one or more fixed points in the window.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Tap {
     /// Linux evdev key or button code.
     pub key: u16,
-    /// Horizontal position, 0.0 (left) to 1.0 (right).
-    pub x: f32,
-    /// Vertical position, 0.0 (top) to 1.0 (bottom).
-    pub y: f32,
+    /// Points touched together while the key is held, as fractions of the
+    /// window: horizontal 0.0 (left) to 1.0 (right), vertical 0.0 (top) to
+    /// 1.0 (bottom).
+    pub points: Vec<(f32, f32)>,
+}
+
+/// Hold a key to put a touch down at a point and steer it with the mouse.
+///
+/// Used for observation views and for aimed skills: the touch goes down when
+/// the key goes down, mouse movement drags it within a region, and it lifts
+/// when the key is released.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Aim {
+    /// Linux evdev key or button code that holds the aim.
+    pub key: u16,
+    /// Where the touch goes down, as a fraction of the window.
+    pub anchor: (f32, f32),
+    /// How far it may be dragged from the anchor each way.
+    pub region: (f32, f32),
+    /// Touch movement per unit of mouse movement.
+    pub sensitivity: f32,
+    /// Optional key that abandons the aim, and the point the touch is moved
+    /// to before it lifts (a cast-cancel button).
+    pub cancel: Option<(u16, (f32, f32))>,
+    /// Lift the joystick wheel touch when the aim starts.
+    pub stop_wheel: bool,
 }
 
 /// Four keys that steer one virtual joystick touch.
@@ -131,6 +176,8 @@ pub struct Profile {
     pub wheel: Option<Wheel>,
     /// Optional mouse-look.
     pub look: Option<Look>,
+    /// Hold-to-aim keys.
+    pub aims: Vec<Aim>,
     /// Key to point mappings.
     pub taps: Vec<Tap>,
 }
@@ -155,10 +202,22 @@ impl Profile {
     /// region = [0.2, 0.3]      # how far it may travel from the anchor
     /// sensitivity = 1.0        # optional, default 1.0
     ///
+    /// [[aim]]                  # optional, repeatable: hold a key, steer a touch
+    /// key = "Q"                # the key held to aim
+    /// anchor = [0.9, 0.7]      # where the touch goes down (a skill button)
+    /// region = [0.1, 0.15]     # how far the mouse may drag it
+    /// cancel_key = "Space"     # optional: abandons the aim ...
+    /// cancel_at = [0.8, 0.2]   # ... by moving the touch here and lifting it
+    /// stop_wheel = false       # optional: lift the joystick wheel first
+    ///
     /// [[tap]]
     /// key = "R"                # a key name, a number or "code:N"
     /// x = 0.82                 # 0.0 (left) to 1.0 (right)
     /// y = 0.64                 # 0.0 (top) to 1.0 (bottom)
+    ///
+    /// [[tap]]                  # one key touching several points at once
+    /// key = "T"
+    /// points = [[0.1, 0.2], [0.3, 0.4]]
     /// ```
     ///
     /// # Errors
@@ -180,82 +239,127 @@ impl Profile {
             }
             None => None,
         };
-        let wheel = match raw.wheel {
-            Some(raw_wheel) => {
-                let in_range = |value: f32| value.is_finite() && (0.0..=1.0).contains(&value);
-                let radius_ok = |value: f32| value.is_finite() && value > 0.0 && value <= 1.0;
-                if !raw_wheel.center.iter().copied().all(in_range)
-                    || !raw_wheel.radius.iter().copied().all(radius_ok)
-                {
-                    return Err(ProfileError::BadWheel);
-                }
-                let mut keys = [0u16; 4];
-                for (slot, name) in keys.iter_mut().zip([
-                    &raw_wheel.up,
-                    &raw_wheel.down,
-                    &raw_wheel.left,
-                    &raw_wheel.right,
-                ]) {
-                    let code = parse_key(name).ok_or(ProfileError::UnknownKey(name.clone()))?;
-                    if !used.insert(code) {
-                        return Err(ProfileError::DuplicateKey(name.clone()));
-                    }
-                    *slot = code;
-                }
-                Some(Wheel {
-                    center: (raw_wheel.center[0], raw_wheel.center[1]),
-                    radius: (raw_wheel.radius[0], raw_wheel.radius[1]),
-                    keys,
-                })
-            }
-            None => None,
-        };
-        let look = match raw.look {
-            Some(raw_look) => {
-                let in_range = |value: f32| value.is_finite() && (0.0..=1.0).contains(&value);
-                let sensitivity = raw_look.sensitivity.unwrap_or(1.0);
-                if !raw_look.anchor.iter().copied().all(in_range)
-                    || !raw_look
-                        .region
-                        .iter()
-                        .all(|value| value.is_finite() && *value > 0.0 && *value <= 1.0)
-                    || !sensitivity.is_finite()
-                    || sensitivity <= 0.0
-                {
-                    return Err(ProfileError::BadLook);
-                }
-                Some(Look {
-                    anchor: (raw_look.anchor[0], raw_look.anchor[1]),
-                    region: (raw_look.region[0], raw_look.region[1]),
-                    sensitivity,
-                })
-            }
-            None => None,
-        };
-        let mut taps = Vec::with_capacity(raw.tap.len());
-        for tap in raw.tap {
-            let key = parse_key(&tap.key).ok_or(ProfileError::UnknownKey(tap.key.clone()))?;
-            let in_range = |value: f32| value.is_finite() && (0.0..=1.0).contains(&value);
-            if !in_range(tap.x) || !in_range(tap.y) {
-                return Err(ProfileError::OutOfRange { key: tap.key });
-            }
-            if !used.insert(key) {
-                return Err(ProfileError::DuplicateKey(tap.key));
-            }
-            taps.push(Tap {
-                key,
-                x: tap.x,
-                y: tap.y,
-            });
-        }
+        let wheel = raw
+            .wheel
+            .as_ref()
+            .map(|wheel| parse_wheel(wheel, &mut used))
+            .transpose()?;
+        let look = raw.look.as_ref().map(parse_look).transpose()?;
+        let aims = raw
+            .aim
+            .into_iter()
+            .map(|aim| parse_aim(aim, &mut used))
+            .collect::<Result<Vec<_>, _>>()?;
+        let taps = raw
+            .tap
+            .into_iter()
+            .map(|tap| parse_tap(tap, &mut used))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             package: raw.package,
             toggle_key,
             wheel,
             look,
+            aims,
             taps,
         })
     }
+}
+
+fn in_range(value: f32) -> bool {
+    value.is_finite() && (0.0..=1.0).contains(&value)
+}
+
+fn positive_fraction(value: f32) -> bool {
+    value.is_finite() && value > 0.0 && value <= 1.0
+}
+
+fn point_ok(point: [f32; 2]) -> bool {
+    point.iter().copied().all(in_range)
+}
+
+/// Claim `name` as a new key or button, rejecting unknown and repeated ones.
+fn claim_key(name: &str, used: &mut BTreeSet<u16>) -> Result<u16, ProfileError> {
+    let code = parse_key(name).ok_or_else(|| ProfileError::UnknownKey(name.to_owned()))?;
+    if used.insert(code) {
+        Ok(code)
+    } else {
+        Err(ProfileError::DuplicateKey(name.to_owned()))
+    }
+}
+
+fn parse_wheel(raw: &RawWheel, used: &mut BTreeSet<u16>) -> Result<Wheel, ProfileError> {
+    if !point_ok(raw.center) || !raw.radius.iter().copied().all(positive_fraction) {
+        return Err(ProfileError::BadWheel);
+    }
+    let mut keys = [0u16; 4];
+    for (slot, name) in keys
+        .iter_mut()
+        .zip([&raw.up, &raw.down, &raw.left, &raw.right])
+    {
+        *slot = claim_key(name, used)?;
+    }
+    Ok(Wheel {
+        center: (raw.center[0], raw.center[1]),
+        radius: (raw.radius[0], raw.radius[1]),
+        keys,
+    })
+}
+
+fn parse_look(raw: &RawLook) -> Result<Look, ProfileError> {
+    let sensitivity = raw.sensitivity.unwrap_or(1.0);
+    if !point_ok(raw.anchor)
+        || !raw.region.iter().copied().all(positive_fraction)
+        || !sensitivity.is_finite()
+        || sensitivity <= 0.0
+    {
+        return Err(ProfileError::BadLook);
+    }
+    Ok(Look {
+        anchor: (raw.anchor[0], raw.anchor[1]),
+        region: (raw.region[0], raw.region[1]),
+        sensitivity,
+    })
+}
+
+fn parse_aim(raw: RawAim, used: &mut BTreeSet<u16>) -> Result<Aim, ProfileError> {
+    let key = claim_key(&raw.key, used)?;
+    let sensitivity = raw.sensitivity.unwrap_or(1.0);
+    if !point_ok(raw.anchor)
+        || !raw.region.iter().copied().all(positive_fraction)
+        || !sensitivity.is_finite()
+        || sensitivity <= 0.0
+    {
+        return Err(ProfileError::BadPoint);
+    }
+    let cancel = match (raw.cancel_key, raw.cancel_at) {
+        (Some(name), Some(at)) if point_ok(at) => Some((claim_key(&name, used)?, (at[0], at[1]))),
+        (None, None) => None,
+        _ => return Err(ProfileError::BadPoint),
+    };
+    Ok(Aim {
+        key,
+        anchor: (raw.anchor[0], raw.anchor[1]),
+        region: (raw.region[0], raw.region[1]),
+        sensitivity,
+        cancel,
+        stop_wheel: raw.stop_wheel.unwrap_or(false),
+    })
+}
+
+fn parse_tap(raw: RawTap, used: &mut BTreeSet<u16>) -> Result<Tap, ProfileError> {
+    let key = claim_key(&raw.key, used)?;
+    let points: Vec<(f32, f32)> = match (raw.x, raw.y, raw.points) {
+        (Some(x), Some(y), None) => vec![(x, y)],
+        (None, None, Some(list)) if !list.is_empty() && list.len() <= MAX_TAP_POINTS => {
+            list.into_iter().map(|point| (point[0], point[1])).collect()
+        }
+        _ => return Err(ProfileError::BadPoint),
+    };
+    if points.iter().any(|point| !point_ok([point.0, point.1])) {
+        return Err(ProfileError::OutOfRange { key: raw.key });
+    }
+    Ok(Tap { key, points })
 }
 
 #[cfg(test)]
@@ -288,13 +392,11 @@ mod tests {
             vec![
                 Tap {
                     key: 19,
-                    x: 0.82,
-                    y: 0.64
+                    points: vec![(0.82, 0.64)]
                 },
                 Tap {
                     key: 0x111,
-                    x: 0.5,
-                    y: 0.5
+                    points: vec![(0.5, 0.5)]
                 }
             ]
         );
@@ -393,5 +495,73 @@ mod tests {
                 Err(ProfileError::BadLook)
             ));
         }
+    }
+
+    #[test]
+    fn parses_multi_point_taps_and_aims() {
+        let profile = Profile::parse(
+            r#"
+            package = "a"
+            [[tap]]
+            key = "T"
+            points = [[0.1, 0.2], [0.3, 0.4]]
+            [[aim]]
+            key = "Q"
+            anchor = [0.9, 0.7]
+            region = [0.1, 0.15]
+            cancel_key = "Space"
+            cancel_at = [0.8, 0.2]
+            stop_wheel = true
+            [[aim]]
+            key = "LeftAlt"
+            anchor = [0.5, 0.5]
+            region = [0.2, 0.2]
+            sensitivity = 2.0
+            "#,
+        )
+        .unwrap();
+        assert_eq!(profile.taps[0].points, vec![(0.1, 0.2), (0.3, 0.4)]);
+        assert_eq!(profile.aims.len(), 2);
+        assert_eq!(profile.aims[0].cancel, Some((57, (0.8, 0.2))));
+        assert!(profile.aims[0].stop_wheel);
+        assert!(profile.aims[1].cancel.is_none());
+    }
+
+    #[test]
+    fn rejects_bad_taps_and_aims() {
+        let bad = [
+            "[[tap]]\nkey = \"R\"\nx = 0.1",
+            "[[tap]]\nkey = \"R\"\nx = 0.1\ny = 0.1\npoints = [[0.1, 0.1]]",
+            "[[tap]]\nkey = \"R\"\npoints = []",
+            "[[tap]]\nkey = \"R\"\npoints = [[0.1,0.1],[0.1,0.1],[0.1,0.1],[0.1,0.1],[0.1,0.1]]",
+            "[[aim]]\nkey = \"Q\"\nanchor = [2.0, 0.5]\nregion = [0.1, 0.1]",
+            "[[aim]]\nkey = \"Q\"\nanchor = [0.5, 0.5]\nregion = [0.0, 0.1]",
+            "[[aim]]\nkey = \"Q\"\nanchor = [0.5, 0.5]\nregion = [0.1, 0.1]\ncancel_key = \"Space\"",
+        ];
+        for text in bad {
+            assert!(
+                matches!(
+                    Profile::parse(&format!("package = \"a\"\n{text}")),
+                    Err(ProfileError::BadPoint)
+                ),
+                "{text}"
+            );
+        }
+        assert!(matches!(
+            Profile::parse(
+                "package = \"a\"\n[[tap]]\nkey = \"R\"\nx = 0.1\ny = 0.1\n[[aim]]\nkey = \"R\"\nanchor = [0.5, 0.5]\nregion = [0.1, 0.1]"
+            ),
+            Err(ProfileError::DuplicateKey(_))
+        ));
+    }
+
+    #[test]
+    fn the_shipped_example_profile_is_valid() {
+        let profile = Profile::parse(include_str!("../../../profiles/example.toml")).unwrap();
+        assert_eq!(profile.package, "com.example.game");
+        assert!(profile.wheel.is_some());
+        assert!(profile.look.is_some());
+        assert_eq!(profile.aims.len(), 1);
+        assert_eq!(profile.taps.len(), 3);
     }
 }
