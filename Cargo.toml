@@ -25,6 +25,7 @@ members = [
     "graphics/droidloom-wayland",
     "graphics/droidloom-denial-protocol",
     "graphics/droidloom-input-protocol",
+    "graphics/droidloom-keymap",
     "graphics/droidloom-minigbm",
     "graphics/droidloom-syncobj",
     "graphics/droidloom-surface-bridge",

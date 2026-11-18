@@ -18,6 +18,7 @@ droidloom-denial-endpoint = { path = "../droidloom-denial-endpoint" }
 droidloom-denial-ipc = { path = "../droidloom-denial-ipc" }
 droidloom-denial-protocol = { path = "../droidloom-denial-protocol" }
 droidloom-input-protocol = { path = "../droidloom-input-protocol" }
+droidloom-keymap = { path = "../droidloom-keymap" }
 droidloom-syncobj = { path = "../droidloom-syncobj" }
 droidloom-window-policy = { path = "../../runtime/droidloom-window-policy" }
 gbm.workspace = true
@@ -36,6 +37,7 @@ url = "2.5.8"
 zbus = { version = "5.18.0", default-features = false, features = ["async-io"] }
 async-io = "2.6.0"
 futures-lite = "2.6.1"
+rand = "0.8"
 
 [lints.rust]
 unsafe_code = "allow"
