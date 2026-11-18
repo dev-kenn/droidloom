@@ -139,6 +139,7 @@ impl App {
         );
         let (action, pressure) = match touch.phase {
             Phase::Down => (TouchAction::Down, u16::MAX),
+            Phase::Move => (TouchAction::Motion, u16::MAX),
             Phase::Up => (TouchAction::Up, 0),
             Phase::Cancel => (TouchAction::Cancel, 0),
         };
