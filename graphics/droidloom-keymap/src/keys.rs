@@ -5,7 +5,7 @@
 /// Names are case-insensitive: `A` to `Z`, `0` to `9`, `F1` to `F12`,
 /// `Space`, `Tab`, `Enter`, `Escape`, `Grave`, `Minus`, `Equal`, `CapsLock`,
 /// `LeftShift`, `RightShift`, `LeftCtrl`, `LeftAlt`, and the mouse buttons
-/// `MouseRight`, `MouseMiddle`, `MouseSide` and `MouseExtra`. A plain decimal
+/// `MouseLeft`, `MouseRight`, `MouseMiddle`, `MouseSide` and `MouseExtra`. A plain decimal
 /// number, or `code:N`, is taken as the evdev code itself.
 #[must_use]
 pub fn parse_key(name: &str) -> Option<u16> {
@@ -78,6 +78,7 @@ pub fn parse_key(name: &str) -> Option<u16> {
         "f10" => 68,
         "f11" => 87,
         "f12" => 88,
+        "mouseleft" => 0x110,
         "mouseright" => 0x111,
         "mousemiddle" => 0x112,
         "mouseside" => 0x113,

@@ -18,4 +18,4 @@ pub use keys::parse_key;
 pub use mapper::{
     InputState, MAX_CONTACTS, Mapper, Outcome, Phase, SYNTHETIC_POINTER_BASE, TouchOut,
 };
-pub use profile::{Profile, ProfileError, Tap, Wheel};
+pub use profile::{Look, Profile, ProfileError, Tap, Wheel};

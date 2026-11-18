@@ -399,6 +399,11 @@ struct App {
     touch_contacts: BTreeMap<i32, Contact>,
     /// Key and mouse button mapper for the focused game, if it has a profile.
     keymap: Option<droidloom_keymap::Mapper>,
+    /// The pointer lock held while mouse-look is on.
+    pointer_lock: Option<keymap_input::PointerLock>,
+    pointer_constraints: smithay_client_toolkit::seat::pointer_constraints::PointerConstraintsState,
+    relative_pointer: smithay_client_toolkit::seat::relative_pointer::RelativePointerState,
+    qh: QueueHandle<App>,
     // Touch and mouse share Android's injected pointer device; keys are separate.
     motion_times: input_time::Stream,
     key_times: input_time::Stream,
@@ -2247,6 +2252,7 @@ impl App {
         if let Some(previous) = self.focused {
             self.keymap_release(previous);
         }
+        self.drop_pointer_lock();
         if let Some(previous) = self.focused
             && let Some(task) = self.tasks.get_mut(&previous)
         {
@@ -2257,6 +2263,7 @@ impl App {
         }
         self.focused = object;
         self.keymap_focus(object);
+        self.keymap_sync_lock();
         self.update_text_input();
         if let Some(object) = object
             && let Some(task) = self.tasks.get_mut(&object)
@@ -3147,6 +3154,16 @@ impl PointerHandler for App {
             }
             let object = self.task_for_surface(&event.surface);
             match event.kind {
+                PointerEventKind::Press { button, .. }
+                    if button == LEFT_BUTTON && self.keymap_look_active() =>
+                {
+                    self.keymap_input(button, droidloom_keymap::InputState::Pressed);
+                }
+                PointerEventKind::Release { button, .. }
+                    if button == LEFT_BUTTON && self.keymap_look_active() =>
+                {
+                    self.keymap_input(button, droidloom_keymap::InputState::Released);
+                }
                 PointerEventKind::Press { button, .. } if button != LEFT_BUTTON => {
                     self.keymap_input(button, droidloom_keymap::InputState::Pressed);
                 }
@@ -3374,6 +3391,8 @@ smithay_client_toolkit::delegate_seat!(App);
 smithay_client_toolkit::delegate_keyboard!(App);
 smithay_client_toolkit::delegate_pointer!(App);
 smithay_client_toolkit::delegate_touch!(App);
+smithay_client_toolkit::delegate_pointer_constraints!(App);
+smithay_client_toolkit::delegate_relative_pointer!(App);
 smithay_client_toolkit::delegate_registry!(App);
 
 wayland_client::delegate_noop!(App: ignore WpLinuxDrmSyncobjManagerV1);
@@ -3539,6 +3558,16 @@ fn run() -> Result<(), PresenterError> {
         pointer_contact: None,
         touch_contacts: BTreeMap::new(),
         keymap: None,
+        pointer_lock: None,
+        pointer_constraints:
+            smithay_client_toolkit::seat::pointer_constraints::PointerConstraintsState::bind(
+                &globals, &qh,
+            ),
+        relative_pointer:
+            smithay_client_toolkit::seat::relative_pointer::RelativePointerState::bind(
+                &globals, &qh,
+            ),
+        qh: qh.clone(),
         motion_times: input_time::Stream::default(),
         key_times: input_time::Stream::default(),
         input_timestamps: input_time::Timestamps::new(globals.bind(&qh, 1..=1, ()).ok()),

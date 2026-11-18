@@ -25,6 +25,11 @@ pub enum ProfileError {
         /// The key the tap belongs to, as written in the file.
         key: String,
     },
+    /// The look anchor, region or sensitivity is not usable.
+    #[error(
+        "look anchor must be inside the window, region between 0.0 and 1.0, sensitivity above 0"
+    )]
+    BadLook,
     /// The wheel centre or radius is not usable.
     #[error("wheel centre must be inside the window and radius between 0.0 and 1.0")]
     BadWheel,
@@ -39,8 +44,17 @@ struct RawProfile {
     package: String,
     toggle_key: Option<String>,
     wheel: Option<RawWheel>,
+    look: Option<RawLook>,
     #[serde(default)]
     tap: Vec<RawTap>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLook {
+    anchor: [f32; 2],
+    region: [f32; 2],
+    sensitivity: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -92,6 +106,20 @@ impl Wheel {
     }
 }
 
+/// Mouse-look: mouse movement drags one touch around a region of the window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
+    /// Where the look touch starts, as a fraction of the window.
+    pub anchor: (f32, f32),
+    /// How far the touch may travel from the anchor each way, as a fraction
+    /// of the window width and height. Past that it lifts and starts again
+    /// at the anchor.
+    pub region: (f32, f32),
+    /// Touch movement per unit of mouse movement. 1.0 moves the touch by the
+    /// same fraction of the window as the mouse moved.
+    pub sensitivity: f32,
+}
+
 /// A validated keymap for one Android package.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
@@ -101,6 +129,8 @@ pub struct Profile {
     pub toggle_key: Option<u16>,
     /// Optional joystick wheel.
     pub wheel: Option<Wheel>,
+    /// Optional mouse-look.
+    pub look: Option<Look>,
     /// Key to point mappings.
     pub taps: Vec<Tap>,
 }
@@ -119,6 +149,11 @@ impl Profile {
     /// down = "S"
     /// left = "A"
     /// right = "D"
+    ///
+    /// [look]                   # optional: mouse movement drags one touch
+    /// anchor = [0.65, 0.5]     # where the look touch starts
+    /// region = [0.2, 0.3]      # how far it may travel from the anchor
+    /// sensitivity = 1.0        # optional, default 1.0
     ///
     /// [[tap]]
     /// key = "R"                # a key name, a number or "code:N"
@@ -175,6 +210,28 @@ impl Profile {
             }
             None => None,
         };
+        let look = match raw.look {
+            Some(raw_look) => {
+                let in_range = |value: f32| value.is_finite() && (0.0..=1.0).contains(&value);
+                let sensitivity = raw_look.sensitivity.unwrap_or(1.0);
+                if !raw_look.anchor.iter().copied().all(in_range)
+                    || !raw_look
+                        .region
+                        .iter()
+                        .all(|value| value.is_finite() && *value > 0.0 && *value <= 1.0)
+                    || !sensitivity.is_finite()
+                    || sensitivity <= 0.0
+                {
+                    return Err(ProfileError::BadLook);
+                }
+                Some(Look {
+                    anchor: (raw_look.anchor[0], raw_look.anchor[1]),
+                    region: (raw_look.region[0], raw_look.region[1]),
+                    sensitivity,
+                })
+            }
+            None => None,
+        };
         let mut taps = Vec::with_capacity(raw.tap.len());
         for tap in raw.tap {
             let key = parse_key(&tap.key).ok_or(ProfileError::UnknownKey(tap.key.clone()))?;
@@ -195,6 +252,7 @@ impl Profile {
             package: raw.package,
             toggle_key,
             wheel,
+            look,
             taps,
         })
     }
@@ -310,5 +368,30 @@ mod tests {
             )),
             Err(ProfileError::DuplicateKey(_))
         ));
+    }
+
+    #[test]
+    fn parses_and_validates_a_look() {
+        let profile = Profile::parse(
+            "package = \"a\"\n[look]\nanchor = [0.6, 0.5]\nregion = [0.2, 0.3]\nsensitivity = 2.0",
+        )
+        .unwrap();
+        let look = profile.look.unwrap();
+        assert_eq!(look.anchor, (0.6, 0.5));
+        assert!((look.sensitivity - 2.0).abs() < f32::EPSILON);
+        let default =
+            Profile::parse("package = \"a\"\n[look]\nanchor = [0.6, 0.5]\nregion = [0.2, 0.3]")
+                .unwrap();
+        assert!((default.look.unwrap().sensitivity - 1.0).abs() < f32::EPSILON);
+        for bad in [
+            "anchor = [1.2, 0.5]\nregion = [0.2, 0.3]",
+            "anchor = [0.5, 0.5]\nregion = [0.0, 0.3]",
+            "anchor = [0.5, 0.5]\nregion = [0.2, 0.3]\nsensitivity = 0.0",
+        ] {
+            assert!(matches!(
+                Profile::parse(&format!("package = \"a\"\n[look]\n{bad}")),
+                Err(ProfileError::BadLook)
+            ));
+        }
     }
 }
