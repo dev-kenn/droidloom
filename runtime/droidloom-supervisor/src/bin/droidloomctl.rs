@@ -14,7 +14,7 @@ use std::{
 use clap::{Parser, Subcommand, ValueEnum};
 use droidloom_supervisor::boot_notice::BootNotice;
 use droidloom_supervisor::control::{
-    ControlRequest, DEFAULT_CELL_SPEC, DEFAULT_CONTROL_SOCKET, request, request_with_progress,
+    ApplicationAction, ControlRequest, DEFAULT_CELL_SPEC, DEFAULT_CONTROL_SOCKET, request, request_with_progress,
 };
 use droidloom_window_policy::{
     LogicalSize, SessionMode, WindowPolicyPaths, WindowPolicyStore, WindowPreference,
@@ -152,6 +152,17 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         user: u32,
     },
+    /// Inspect or change one installed Android application: open its App info
+    /// window, stop it, remove it or clear its cache or data.
+    App {
+        /// What to do.
+        action: AppAction,
+        /// Android package name.
+        package: String,
+        /// Android user identifier.
+        #[arg(long, default_value_t = 0)]
+        user: u32,
+    },
     /// Persist Android's built-in-display density, warming the runtime if needed.
     Dpi {
         /// Android density in dots per inch.
@@ -180,6 +191,32 @@ enum Command {
         #[arg(long)]
         package: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum AppAction {
+    /// Open Android's App info screen for it in a window.
+    Info,
+    /// Stop all of its processes, as Force stop does.
+    Stop,
+    /// Remove it. System packages cannot be removed.
+    Uninstall,
+    /// Delete its cache.
+    ClearCache,
+    /// Delete all of its data, as if newly installed.
+    ClearData,
+}
+
+impl From<AppAction> for ApplicationAction {
+    fn from(action: AppAction) -> Self {
+        match action {
+            AppAction::Info => Self::Settings,
+            AppAction::Stop => Self::Stop,
+            AppAction::Uninstall => Self::Uninstall,
+            AppAction::ClearCache => Self::ClearCache,
+            AppAction::ClearData => Self::ClearData,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -320,6 +357,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 user,
             },
             Command::Applications { user } => ControlRequest::ListApplications { user },
+            Command::App {
+                action,
+                package,
+                user,
+            } => ControlRequest::ApplicationAction {
+                package,
+                user,
+                action: action.into(),
+            },
             Command::Dpi { dpi, spec } => ControlRequest::SetDpi { spec, dpi },
             Command::WindowMode {
                 mode,

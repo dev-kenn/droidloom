@@ -233,6 +233,18 @@ droidloomctl launch com.halfbrick.fruitninjafree \
   --component com.halfbrick.fruitninjafree/com.halfbrick.mortar.MortarGameLauncherActivity
 ```
 
+To open an app's Android App info window, stop it, remove it, or clear its cache
+or data, use `droidloomctl app`. System packages cannot be uninstalled:
+
+```console
+droidloomctl app info com.whatsapp
+droidloomctl app uninstall com.whatsapp
+```
+
+Each generated launcher also lists **Information** and **Uninstall** as
+`.desktop` actions (`Actions=`) that run these commands, for launchers that show
+desktop actions.
+
 These examples assume you installed WhatsApp or the tested Fruit Ninja 2.8.9
 x86_64 APK. APKs are not bundled with Droidloom. Complete app registration and
 first-run prompts yourself. Revision 11 handles Fruit Ninja's launcher and

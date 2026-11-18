@@ -618,8 +618,14 @@ fn preserved_resolution(path: &Path) -> Result<Option<String>, CatalogError> {
 }
 
 fn with_launch_resolution(desktop: String, resolution: &str) -> String {
+    // The key and the launch option belong to the `[Desktop Entry]` group, which
+    // ends where the first `[Desktop Action ...]` group starts.
+    let split = desktop
+        .find("\n[Desktop Action")
+        .map_or(desktop.len(), |index| index + 1);
+    let (entry, actions) = desktop.split_at(split);
     let mut result = String::new();
-    for line in desktop.lines() {
+    for line in entry.trim_end().lines() {
         result.push_str(line);
         if line.starts_with("Exec=") {
             result.push_str(" --resolution ");
@@ -628,13 +634,17 @@ fn with_launch_resolution(desktop: String, resolution: &str) -> String {
         result.push('\n');
     }
     result.push_str(&format!("X-Droidloom-Resolution={resolution}\n"));
+    if !actions.is_empty() {
+        result.push('\n');
+        result.push_str(actions);
+    }
     result
 }
 
 fn desktop_entry(application: &AndroidApplication, user: u32, icon: Option<&str>) -> String {
     let icon = icon.unwrap_or("application-x-executable");
     format!(
-        "[Desktop Entry]\nType=Application\nVersion=1.0\nName={}\nComment=Android application via Droidloom\nTryExec=/usr/bin/droidloomctl\nExec=/usr/bin/droidloomctl launch {} --component {} --user {}\nIcon={}\nTerminal=false\nStartupNotify=true\nStartupWMClass={}\nX-Droidloom-Managed=true\nX-Droidloom-Package={}\nX-Droidloom-Component={}\nX-Droidloom-User={}\n",
+        "[Desktop Entry]\nType=Application\nVersion=1.0\nName={}\nComment=Android application via Droidloom\nTryExec=/usr/bin/droidloomctl\nExec=/usr/bin/droidloomctl launch {} --component {} --user {}\nIcon={}\nTerminal=false\nStartupNotify=true\nStartupWMClass={}\nActions=Information;Uninstall;\nX-Droidloom-Managed=true\nX-Droidloom-Package={}\nX-Droidloom-Component={}\nX-Droidloom-User={}\n\n[Desktop Action Information]\nName=Information\nExec=/usr/bin/droidloomctl app info {} --user {}\n\n[Desktop Action Uninstall]\nName=Uninstall\nExec=/usr/bin/droidloomctl app uninstall {} --user {}\n",
         escape_desktop_value(&application.name),
         application.package,
         application.component,
@@ -643,6 +653,10 @@ fn desktop_entry(application: &AndroidApplication, user: u32, icon: Option<&str>
         application.package,
         application.package,
         application.component,
+        user,
+        application.package,
+        user,
+        application.package,
         user
     )
 }
@@ -1051,7 +1065,8 @@ mod tests {
             application_id(0, "org.example.game/.Main")
         ));
         let mut desktop = fs::read_to_string(&path).unwrap();
-        desktop.push_str("X-Droidloom-Resolution=2560x1440\n");
+        let group = desktop.find("\n[Desktop Action").unwrap();
+        desktop.insert_str(group, "X-Droidloom-Resolution=2560x1440\n");
         fs::write(&path, desktop).unwrap();
         source.applications[0].name = "Renamed Game".into();
         reconcile(&paths, &mut source).unwrap();
@@ -1059,6 +1074,8 @@ mod tests {
         assert!(desktop.contains("Name=Renamed Game\n"));
         assert!(desktop.contains("--user 0 --resolution 2560x1440\n"));
         assert_eq!(desktop.matches("X-Droidloom-Resolution=").count(), 1);
+        assert_eq!(desktop.matches(" --resolution ").count(), 1);
+        assert!(desktop.contains("Exec=/usr/bin/droidloomctl app uninstall org.example.game --user 0\n"));
         assert_eq!(reconcile(&paths, &mut source).unwrap().launchers_updated, 0);
         fs::write(
             &path,
@@ -1082,6 +1099,13 @@ mod tests {
             "Exec=/usr/bin/droidloomctl launch org.mozilla.firefox --component org.mozilla.firefox/.App --user 0"
         ));
         assert!(!entry.contains("droidloomctl start"));
+        assert!(entry.contains("Actions=Information;Uninstall;\n"));
+        assert!(entry.contains(
+            "[Desktop Action Information]\nName=Information\nExec=/usr/bin/droidloomctl app info org.mozilla.firefox --user 0\n"
+        ));
+        assert!(entry.contains(
+            "[Desktop Action Uninstall]\nName=Uninstall\nExec=/usr/bin/droidloomctl app uninstall org.mozilla.firefox --user 0\n"
+        ));
     }
 
     #[test]
