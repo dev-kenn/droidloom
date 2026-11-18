@@ -644,7 +644,7 @@ fn with_launch_resolution(desktop: String, resolution: &str) -> String {
 fn desktop_entry(application: &AndroidApplication, user: u32, icon: Option<&str>) -> String {
     let icon = icon.unwrap_or("application-x-executable");
     format!(
-        "[Desktop Entry]\nType=Application\nVersion=1.0\nName={}\nComment=Android application via Droidloom\nTryExec=/usr/bin/droidloomctl\nExec=/usr/bin/droidloomctl launch {} --component {} --user {}\nIcon={}\nTerminal=false\nStartupNotify=true\nStartupWMClass={}\nActions=Information;Uninstall;\nX-Droidloom-Managed=true\nX-Droidloom-Package={}\nX-Droidloom-Component={}\nX-Droidloom-User={}\n\n[Desktop Action Information]\nName=Information\nExec=/usr/bin/droidloomctl app info {} --user {}\n\n[Desktop Action Uninstall]\nName=Uninstall\nExec=/usr/bin/droidloomctl app uninstall {} --user {}\n",
+        "[Desktop Entry]\nType=Application\nVersion=1.0\nName={}\nComment=Android application via Droidloom\nTryExec=/usr/bin/droidloomctl\nExec=/usr/bin/droidloomctl launch {} --component {} --user {}\nIcon={}\nTerminal=false\nStartupNotify=true\nStartupWMClass={}\nActions=Information;Uninstall;\nX-Droidloom-Managed=true\nX-Droidloom-Package={}\nX-Droidloom-Component={}\nX-Droidloom-User={}\nX-Denial-Terminate=false\n\n[Desktop Action Information]\nName=Information\nExec=/usr/bin/droidloomctl app info {} --user {}\n\n[Desktop Action Uninstall]\nName=Uninstall\nExec=/usr/bin/droidloomctl app uninstall {} --user {}\n",
         escape_desktop_value(&application.name),
         application.package,
         application.component,
@@ -1100,6 +1100,8 @@ mod tests {
         ));
         assert!(!entry.contains("droidloomctl start"));
         assert!(entry.contains("Actions=Information;Uninstall;\n"));
+        // Ending droidloomctl would not end the Android app.
+        assert!(entry.contains("X-Denial-Terminate=false\n"));
         assert!(entry.contains(
             "[Desktop Action Information]\nName=Information\nExec=/usr/bin/droidloomctl app info org.mozilla.firefox --user 0\n"
         ));

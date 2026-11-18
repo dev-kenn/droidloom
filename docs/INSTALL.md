@@ -243,7 +243,8 @@ droidloomctl app uninstall com.whatsapp
 
 Each generated launcher also lists **Information** and **Uninstall** as
 `.desktop` actions (`Actions=`) that run these commands, for launchers that show
-desktop actions.
+desktop actions. They also set `X-Denial-Terminate=false`, so a launcher does not
+offer to kill the short-lived `droidloomctl` process as if it were the app.
 
 These examples assume you installed WhatsApp or the tested Fruit Ninja 2.8.9
 x86_64 APK. APKs are not bundled with Droidloom. Complete app registration and
