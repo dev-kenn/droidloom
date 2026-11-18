@@ -539,6 +539,20 @@ The subsequent source fixes and full-suite results are recorded above.
   sharing depends on compositor protocol support. Surrounding text and cursor
   geometry are not exported through the text-input integration. Inline
   notification replies and custom Android notification layouts are unsupported.
+- **Media controls are not forwarded to Android apps (user-reported, cause
+  unidentified).** Pressing the host's media controls (play/pause, next,
+  previous and similar) does nothing in the running Android app. The only
+  visible effect is that the phone's screen lights up. One cause is found: the
+  evdev-to-Android key map (`android/framework/droidloom-window-policy/src/input_keys.rs`)
+  had no media keys, so the routed-input state rejected them as `unsupported
+  evdev key`. The transport keys (play/pause, play, pause, next, previous,
+  stop, rewind, fast-forward) are now mapped and reach the window policy's
+  media-session route. This needs an Android rebuild and a phone test.
+  Unverified: whether the Denial compositor forwards these keys to Droidloom
+  at all, since the screen lighting up suggests the host handles them itself.
+  If keys still do nothing, check that next (`getevent`/`dumpsys input` inside
+  Android with a media session active). Volume and mute stay unmapped on
+  purpose, because Android and the host would otherwise both change volume.
 - **Shared host kernel.** This is an Android container runtime, not a virtual
   machine. See [security requirements](threat-model-v2.md) for isolation boundaries.
 - **The built-in display's channel closes without a goodbye.** When the host

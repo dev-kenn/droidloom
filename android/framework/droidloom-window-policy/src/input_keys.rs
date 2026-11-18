@@ -85,9 +85,39 @@ pub(super) fn android_keycode(scan: u32) -> Option<i32> {
         111 => 112, // FORWARD_DEL
         125 => 117, // META_LEFT
         126 => 118, // META_RIGHT
+        128 => 86,  // MEDIA_STOP (KEY_STOP)
         139 => 82,  // MENU
         158 => 4,   // BACK
         159 => 125, // FORWARD
+        // Media transport keys reach the Android media session through the
+        // window policy. Volume and mute stay unmapped: the host owns volume.
+        163 => 87,  // MEDIA_NEXT (KEY_NEXTSONG)
+        164 => 85,  // MEDIA_PLAY_PAUSE (KEY_PLAYPAUSE)
+        165 => 88,  // MEDIA_PREVIOUS (KEY_PREVIOUSSONG)
+        166 => 86,  // MEDIA_STOP (KEY_STOPCD)
+        168 => 89,  // MEDIA_REWIND (KEY_REWIND)
+        200 => 126, // MEDIA_PLAY (KEY_PLAYCD)
+        201 => 127, // MEDIA_PAUSE (KEY_PAUSECD)
+        207 => 126, // MEDIA_PLAY (KEY_PLAY)
+        208 => 90,  // MEDIA_FAST_FORWARD (KEY_FASTFORWARD)
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::android_keycode;
+
+    #[test]
+    fn media_transport_keys_map_and_volume_stays_host_owned() {
+        assert_eq!(android_keycode(164), Some(85));
+        assert_eq!(android_keycode(163), Some(87));
+        assert_eq!(android_keycode(165), Some(88));
+        assert_eq!(android_keycode(166), Some(86));
+        assert_eq!(android_keycode(207), Some(126));
+        assert_eq!(android_keycode(201), Some(127));
+        for volume in [113, 114, 115] {
+            assert_eq!(android_keycode(volume), None);
+        }
+    }
 }
