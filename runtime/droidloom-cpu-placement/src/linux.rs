@@ -122,6 +122,13 @@ impl Groups {
         if values.iter().all(|&(_, v)| v == min) {
             return Ok(None);
         }
+        // A smallest tier holding most of the CPUs is the general-purpose
+        // domain, not a background one. Splitting it off leaves graphics and
+        // app work sharing the few remaining cores (a 6+2 phone gave the
+        // presenter, composer and decoders two prime cores, which froze video).
+        if values.iter().filter(|&&(_, v)| v == min).count() * 2 > values.len() {
+            return Ok(None);
+        }
         let mut big: Vec<_> = values
             .iter()
             .filter(|&&(_, v)| v > min)
@@ -224,6 +231,15 @@ mod tests {
             .unwrap();
         assert_eq!(g.graphics.list(), "2,3");
         assert_eq!(g.background.list(), "0,1");
+        // Smallest tier is most of the CPUs (6+2): no split.
+        let six_two = CpuSet::parse("0-7").unwrap();
+        let caps: Vec<_> = (0..8).map(|c| (c, if c < 6 { 762 } else { 1024 })).collect();
+        assert!(Groups::from_capacities(six_two, &caps).unwrap().is_none());
+        // Exactly half small (4+4) still splits.
+        let four_four = CpuSet::parse("0-7").unwrap();
+        let caps: Vec<_> = (0..8).map(|c| (c, if c < 4 { 400 } else { 900 })).collect();
+        let g = Groups::from_capacities(four_four, &caps).unwrap().unwrap();
+        assert_eq!(g.background.list(), "0,1,2,3");
         assert!(Groups::from_capacities(all.clone(), &[(0, 429)]).is_err());
         assert!(
             Groups::from_capacities(all.clone(), &[(0, 10), (1, 10), (2, 10), (3, 10)])

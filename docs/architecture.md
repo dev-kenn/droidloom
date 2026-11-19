@@ -769,7 +769,9 @@ worker creation; there is no thread-name scanner or polling daemon.
 The host backend reads `cpu_capacity` for the CPUs allowed at startup. It keeps
 prime cores in the graphics class, respects the inherited domain, and does not
 guess topology from CPU numbers or frequency. Homogeneous domains need no
-partition. Missing topology produces a diagnostic and preserves inherited
+partition. A smallest tier that holds more than half of the CPUs (for example 6 mid
++ 2 prime) is the general-purpose domain, so no partition is made: splitting it
+left graphics and apps on two cores and froze video on such phones. Missing topology produces a diagnostic and preserves inherited
 masks; a platform can supply the paired `DROIDLOOM_BIG_CPUS` and
 `DROIDLOOM_LITTLE_CPUS` overrides. `DROIDLOOM_CPU_PLACEMENT=off` disables the
 capacity partition. No Motorola model, serial, or CPU-number condition is part
