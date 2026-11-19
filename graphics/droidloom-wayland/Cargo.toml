@@ -18,7 +18,6 @@ droidloom-denial-endpoint = { path = "../droidloom-denial-endpoint" }
 droidloom-denial-ipc = { path = "../droidloom-denial-ipc" }
 droidloom-denial-protocol = { path = "../droidloom-denial-protocol" }
 droidloom-input-protocol = { path = "../droidloom-input-protocol" }
-droidloom-keymap = { path = "../droidloom-keymap" }
 droidloom-syncobj = { path = "../droidloom-syncobj" }
 droidloom-window-policy = { path = "../../runtime/droidloom-window-policy" }
 gbm.workspace = true
