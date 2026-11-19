@@ -13,7 +13,6 @@ use std::path::PathBuf;
 
 use droidloom_denial_protocol::{InputEvent, TaskObjectId, TouchAction};
 use droidloom_keymap::{InputState, Mapper, Phase, Profile, TouchOut};
-use rand::Rng;
 use smithay_client_toolkit::reexports::client::protocol::wl_pointer;
 use smithay_client_toolkit::reexports::client::protocol::wl_surface;
 use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
@@ -25,12 +24,6 @@ use smithay_client_toolkit::seat::pointer_constraints::PointerConstraintsHandler
 use smithay_client_toolkit::seat::relative_pointer::{RelativeMotionEvent, RelativePointerHandler};
 
 use crate::{App, BOOTSTRAP_PACKAGE};
-
-/// Pixel offset added to every mapped touch position: a random whole number
-/// from -10 to 10. Nubia's `KeyMouseMgr.hehe()` returns a fixed zero here.
-pub(crate) fn hehe() -> i32 {
-    rand::thread_rng().gen_range(-10..=10)
-}
 
 /// The pointer lock and relative pointer held while mouse-look is on.
 pub(crate) struct PointerLock {
@@ -254,8 +247,8 @@ impl App {
         let (x_fixed, y_fixed) = self.fixed_position(
             object,
             (
-                f64::from(touch.x) * f64::from(width) + f64::from(hehe()),
-                f64::from(touch.y) * f64::from(height) + f64::from(hehe()),
+                f64::from(touch.x) * f64::from(width),
+                f64::from(touch.y) * f64::from(height),
             ),
         );
         let (action, pressure) = match touch.phase {
